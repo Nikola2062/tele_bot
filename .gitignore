@@ -1,0 +1,25 @@
+# secrets
+.env
+
+# runtime shared volume (keep the directory, not its contents)
+data/*
+!data/.gitkeep
+
+# node
+node_modules/
+dist/
+
+# python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# worker local artifacts
+logs/
+out/
+*.log
+state.json
+
+# os / editor junk
+.DS_Store

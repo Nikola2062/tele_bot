@@ -1,0 +1,5 @@
+# Union of dhl/ and papers/ requirements — one install for the whole hub.
+requests>=2.32
+python-dotenv>=1.0
+openai>=1.40
+fpdf2>=2.7

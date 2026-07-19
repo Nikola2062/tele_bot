@@ -1,0 +1,530 @@
+"""Orchestrator: fetch trending papers, summarize, deliver to Telegram, mark sent.
+
+Usage:
+    python -m src.main \
+        --deepseek-api-key sk-xxx \
+        --telegram-bot-token 1234:abc \
+        --telegram-chat-id 12345,67890 \
+        --telegram-send true \
+        --min-upvotes 5 \
+        --attach-pdf false \
+        --mode digest
+
+    # Disable Telegram delivery (prints summaries to stdout, skips state write):
+    python -m src.main --deepseek-api-key sk-xxx --telegram-send false
+
+    # Weekly recap (no fetch, no DeepSeek — reuses stored summaries):
+    python -m src.main \
+        --deepseek-api-key sk-unused \
+        --mode recap --recap-days 7 \
+        --telegram-bot-token 1234:abc --telegram-chat-id 12345
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import signal
+import sys
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from dotenv import load_dotenv
+
+from . import pdf_builder, state, telegram_sender
+from .fetcher import Paper, fetch_fresh
+from .summarizer import Summary, summarize
+
+ROOT = Path(__file__).resolve().parent.parent
+LOG_FILE = ROOT / "logs" / "run.log"
+
+# Load .env from the project root so `python -m src.main` works standalone,
+# without a wrapper script forwarding credentials from the environment.
+load_dotenv(ROOT / ".env")
+
+# Mirrors scripts/com.user.hugging-papers.plist (daily 10:00 local). Override
+# with SCHEDULE_HOUR / SCHEDULE_MINUTE if the launchd schedule is changed.
+SCHEDULE_TZ = ZoneInfo("Europe/Berlin")
+
+
+def _setup_logging() -> None:
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_FILE),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+
+
+def _str2bool(v: str) -> bool:
+    s = v.strip().lower()
+    if s in ("true", "t", "yes", "y", "1"):
+        return True
+    if s in ("false", "f", "no", "n", "0"):
+        return False
+    raise argparse.ArgumentTypeError(f"expected true/false, got {v!r}")
+
+
+def _notify_error(log: logging.Logger, message: str, *, telegram_send: bool, token: str | None, chat_ids: str | None) -> None:
+    if not (telegram_send and token and chat_ids):
+        return
+    try:
+        telegram_sender.send_error(message, token=token, chat_ids=chat_ids)
+    except Exception as e:
+        log.exception("error notification failed: %s", e)
+
+
+def _next_run_at(now: datetime | None = None) -> datetime:
+    hour = int(os.environ.get("SCHEDULE_HOUR", "10"))
+    minute = int(os.environ.get("SCHEDULE_MINUTE", "0"))
+    now = (now or datetime.now(SCHEDULE_TZ)).astimezone(SCHEDULE_TZ)
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _notify_next_run(
+    log: logging.Logger,
+    *,
+    telegram_send: bool,
+    token: str | None,
+    chat_ids: str | None,
+) -> None:
+    label = _next_run_at().strftime("%a %Y-%m-%d %H:%M %Z")
+    log.info("next message scheduled for %s", label)
+    if not (telegram_send and token and chat_ids):
+        return
+    try:
+        telegram_sender.send(
+            f"⏰ Next message at {label}",
+            token=token,
+            chat_ids=chat_ids,
+            parse_mode=None,
+        )
+    except Exception as e:
+        log.exception("next-run notification failed: %s", e)
+
+
+def _run_digest(
+    *,
+    log: logging.Logger,
+    deepseek_api_key: str,
+    telegram_send: bool,
+    telegram_bot_token: str | None,
+    telegram_chat_id: str | None,
+    min_upvotes: int,
+    attach_pdf: bool,
+) -> int:
+    want = int(os.environ.get("PAPERS_PER_DAY", "3"))
+    papers = fetch_fresh(want=want, min_upvotes=min_upvotes)
+    if not papers:
+        log.warning("no fresh papers found (min_upvotes=%d); nothing to send", min_upvotes)
+        return 0
+
+    log.info("selected %d papers: %s", len(papers), [p.arxiv_id for p in papers])
+
+    failures = 0
+    processed: list[tuple[Paper, Summary]] = []
+    for paper in papers:
+        try:
+            summary = summarize(paper, api_key=deepseek_api_key)
+        except Exception as e:
+            log.exception("summarize failed for %s: %s", paper.arxiv_id, e)
+            failures += 1
+            continue
+        processed.append((paper, summary))
+
+    # Dry run: print to stdout, send nothing, don't touch state.
+    if not telegram_send:
+        for paper, summary in processed:
+            print("=" * 80)
+            print(f"{paper.arxiv_id} — {paper.title} (👍 {paper.upvotes})")
+            print(f"  {paper.arxiv_url}")
+            print()
+            print("[short_intro]")
+            print(summary.short_intro)
+            print()
+            print("[detailed_summary]")
+            print(summary.detailed_summary)
+            print()
+            print("[professor_explanation]")
+            print(summary.professor_explanation)
+            print()
+        return 0 if failures == 0 else 1
+
+    if not attach_pdf:
+        log.warning("--attach-pdf false: nothing delivered (PDF is the only delivery method)")
+        return 0 if failures == 0 else 1
+
+    # Deliver the whole issue as a single designed PDF — no per-paper text messages.
+    # Papers are marked sent only after the PDF uploads, so a failed upload re-runs next time.
+    if processed:
+        try:
+            now = datetime.now(SCHEDULE_TZ)
+            issue_date = now.strftime("%A, %d %B %Y")
+            out_path = ROOT / "out" / f"hf-daily-papers-{now.strftime('%Y-%m-%d')}.pdf"
+            pdf_builder.build_digest_pdf(processed, out_path, issue_date=issue_date)
+            caption = f"🤗 Hugging Face — Daily Papers ({len(processed)} papers) · {issue_date}"
+            sent_ok = telegram_sender.send_document_file(
+                str(out_path),
+                token=telegram_bot_token,
+                chat_ids=telegram_chat_id,
+                caption=caption,
+            )
+        except Exception as e:
+            log.exception("digest PDF build/send failed: %s", e)
+            sent_ok = False
+
+        if sent_ok:
+            for paper, summary in processed:
+                state.mark_sent(
+                    paper.arxiv_id,
+                    paper.title,
+                    upvotes=paper.upvotes,
+                    arxiv_url=paper.arxiv_url,
+                    hf_url=paper.hf_url,
+                    short_intro=summary.short_intro,
+                )
+            log.info("delivered digest PDF with %d papers", len(processed))
+        else:
+            log.error("digest PDF delivery failed; %d papers left unmarked", len(processed))
+            failures += len(processed)
+
+    if failures and telegram_send:
+        _notify_error(
+            log,
+            f"{failures}/{len(papers)} papers failed during digest run",
+            telegram_send=telegram_send,
+            token=telegram_bot_token,
+            chat_ids=telegram_chat_id,
+        )
+
+    return 0 if failures == 0 else 1
+
+
+def _run_recap(
+    *,
+    log: logging.Logger,
+    telegram_send: bool,
+    telegram_bot_token: str | None,
+    telegram_chat_id: str | None,
+    recap_days: int,
+) -> int:
+    entries = state.recent(days=recap_days)
+    log.info("recap: %d entries in the last %d days", len(entries), recap_days)
+    text = telegram_sender.format_recap(entries, days=recap_days)
+
+    if not telegram_send:
+        print(text)
+        return 0
+
+    try:
+        ok = telegram_sender.send(text, token=telegram_bot_token, chat_ids=telegram_chat_id)
+    except Exception as e:
+        log.exception("recap send failed: %s", e)
+        return 1
+    return 0 if ok else 1
+
+
+def _execute_once(
+    *,
+    log: logging.Logger,
+    deepseek_api_key: str,
+    telegram_send: bool,
+    telegram_bot_token: str | None,
+    telegram_chat_id: str | None,
+    min_upvotes: int,
+    attach_pdf: bool,
+    mode: str,
+    recap_days: int,
+) -> int:
+    try:
+        if mode == "recap":
+            return _run_recap(
+                log=log,
+                telegram_send=telegram_send,
+                telegram_bot_token=telegram_bot_token,
+                telegram_chat_id=telegram_chat_id,
+                recap_days=recap_days,
+            )
+        return _run_digest(
+            log=log,
+            deepseek_api_key=deepseek_api_key,
+            telegram_send=telegram_send,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
+            min_upvotes=min_upvotes,
+            attach_pdf=attach_pdf,
+        )
+    except Exception as e:
+        log.exception("unhandled error in run: %s", e)
+        _notify_error(
+            log,
+            f"{type(e).__name__}: {e}",
+            telegram_send=telegram_send,
+            token=telegram_bot_token,
+            chat_ids=telegram_chat_id,
+        )
+        return 1
+
+
+_STOP_REQUESTED = False
+
+
+def _install_stop_handlers(log: logging.Logger) -> None:
+    def _handler(signum, _frame):
+        global _STOP_REQUESTED
+        _STOP_REQUESTED = True
+        log.info("received signal %s, stopping after current iteration", signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # signal() only works in the main thread of the main interpreter.
+            pass
+
+
+def _sleep_until(target: datetime, log: logging.Logger) -> bool:
+    """Sleep in short chunks until `target`. Returns False if stop was requested."""
+    while not _STOP_REQUESTED:
+        now = datetime.now(SCHEDULE_TZ)
+        remaining = (target - now).total_seconds()
+        if remaining <= 0:
+            return True
+        chunk = min(remaining, 30.0)
+        time.sleep(chunk)
+    return False
+
+
+def _run_scheduler(
+    *,
+    log: logging.Logger,
+    deepseek_api_key: str,
+    telegram_send: bool,
+    telegram_bot_token: str | None,
+    telegram_chat_id: str | None,
+    min_upvotes: int,
+    attach_pdf: bool,
+    mode: str,
+    recap_days: int,
+    run_now: bool,
+) -> int:
+    _install_stop_handlers(log)
+
+    label = _next_run_at().strftime("%a %Y-%m-%d %H:%M %Z")
+    log.info("scheduler started; first run scheduled for %s (run_now=%s)", label, run_now)
+    if telegram_send and telegram_bot_token and telegram_chat_id:
+        try:
+            telegram_sender.send(
+                f"🟢 hugging_papers scheduler started — next run {label}",
+                token=telegram_bot_token,
+                chat_ids=telegram_chat_id,
+                parse_mode=None,
+            )
+        except Exception as e:
+            log.exception("scheduler start notification failed: %s", e)
+
+    last_exit = 0
+    first = True
+    while not _STOP_REQUESTED:
+        if first and run_now:
+            log.info("--run-now set, executing immediately before sleeping")
+        else:
+            target = _next_run_at()
+            log.info("sleeping until %s", target.strftime("%a %Y-%m-%d %H:%M %Z"))
+            if not _sleep_until(target, log):
+                break
+        first = False
+
+        if _STOP_REQUESTED:
+            break
+
+        _notify_next_run(
+            log,
+            telegram_send=telegram_send,
+            token=telegram_bot_token,
+            chat_ids=telegram_chat_id,
+        )
+        last_exit = _execute_once(
+            log=log,
+            deepseek_api_key=deepseek_api_key,
+            telegram_send=telegram_send,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
+            min_upvotes=min_upvotes,
+            attach_pdf=attach_pdf,
+            mode=mode,
+            recap_days=recap_days,
+        )
+        _notify_next_run(
+            log,
+            telegram_send=telegram_send,
+            token=telegram_bot_token,
+            chat_ids=telegram_chat_id,
+        )
+
+    log.info("scheduler stopped")
+    return last_exit
+
+
+def run(
+    *,
+    deepseek_api_key: str,
+    telegram_send: bool,
+    telegram_bot_token: str | None,
+    telegram_chat_id: str | None,
+    min_upvotes: int,
+    attach_pdf: bool,
+    mode: str,
+    recap_days: int,
+    schedule: bool = False,
+    run_now: bool = False,
+) -> int:
+    _setup_logging()
+    log = logging.getLogger("main")
+
+    if telegram_send and (not telegram_bot_token or not telegram_chat_id):
+        log.error("--telegram-send true requires --telegram-bot-token and --telegram-chat-id")
+        return 2
+
+    if schedule:
+        return _run_scheduler(
+            log=log,
+            deepseek_api_key=deepseek_api_key,
+            telegram_send=telegram_send,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
+            min_upvotes=min_upvotes,
+            attach_pdf=attach_pdf,
+            mode=mode,
+            recap_days=recap_days,
+            run_now=run_now,
+        )
+
+    _notify_next_run(
+        log,
+        telegram_send=telegram_send,
+        token=telegram_bot_token,
+        chat_ids=telegram_chat_id,
+    )
+
+    try:
+        return _execute_once(
+            log=log,
+            deepseek_api_key=deepseek_api_key,
+            telegram_send=telegram_send,
+            telegram_bot_token=telegram_bot_token,
+            telegram_chat_id=telegram_chat_id,
+            min_upvotes=min_upvotes,
+            attach_pdf=attach_pdf,
+            mode=mode,
+            recap_days=recap_days,
+        )
+    finally:
+        _notify_next_run(
+            log,
+            telegram_send=telegram_send,
+            token=telegram_bot_token,
+            chat_ids=telegram_chat_id,
+        )
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument(
+        "--deepseek-api-key",
+        default=os.environ.get("DEEPSEEK_API_KEY"),
+        help="DeepSeek API key. Defaults to $DEEPSEEK_API_KEY (or .env). "
+        "Alternatively set $OPENROUTER_API_KEY to summarize via OpenRouter (see $LLM_PROVIDER/$LLM_MODEL).",
+    )
+    p.add_argument(
+        "--telegram-send",
+        type=_str2bool,
+        default=_str2bool(os.environ.get("TELEGRAM_SEND", "true")),
+        metavar="true|false",
+        help="Whether to actually send to Telegram. If false, output is printed to stdout and state is not updated. Defaults to $TELEGRAM_SEND or true.",
+    )
+    p.add_argument(
+        "--telegram-bot-token",
+        default=os.environ.get("TELEGRAM_BOT_TOKEN"),
+        help="Telegram bot token (required when --telegram-send true). Defaults to $TELEGRAM_BOT_TOKEN.",
+    )
+    p.add_argument(
+        "--telegram-chat-id",
+        default=os.environ.get("TELEGRAM_CHAT_ID"),
+        help="Telegram chat id(s). Comma-separated to fan-out to multiple chats. Required when --telegram-send true. Defaults to $TELEGRAM_CHAT_ID.",
+    )
+    p.add_argument(
+        "--min-upvotes",
+        type=int,
+        default=int(os.environ.get("MIN_UPVOTES", "5")),
+        help="Skip papers with fewer upvotes than this (default: 5, or $MIN_UPVOTES).",
+    )
+    p.add_argument(
+        "--attach-pdf",
+        type=_str2bool,
+        nargs="?",
+        const=True,
+        default=_str2bool(os.environ.get("ATTACH_PDF", "true")),
+        metavar="true|false",
+        help="Deliver the run's papers as a single designed PDF digest (the only Telegram delivery). "
+        "Bare --attach-pdf means true; --attach-pdf false delivers nothing. Default: $ATTACH_PDF or true.",
+    )
+    p.add_argument(
+        "--mode",
+        choices=("digest", "recap"),
+        default=os.environ.get("MODE", "digest"),
+        help="digest: fetch + summarize + send (default). recap: send a weekly digest of already-sent papers. Defaults to $MODE.",
+    )
+    p.add_argument(
+        "--recap-days",
+        type=int,
+        default=int(os.environ.get("RECAP_DAYS", "7")),
+        help="Window (in days) for --mode recap (default: 7, or $RECAP_DAYS).",
+    )
+    p.add_argument(
+        "--schedule",
+        action="store_true",
+        help=(
+            "Run as a long-lived scheduler that fires daily at SCHEDULE_HOUR:SCHEDULE_MINUTE "
+            "(Europe/Berlin, defaults to 10:00). Exits cleanly on SIGINT/SIGTERM."
+        ),
+    )
+    p.add_argument(
+        "--run-now",
+        action="store_true",
+        help="With --schedule, execute one run immediately before entering the sleep loop.",
+    )
+    args = p.parse_args()
+
+    if args.mode == "digest" and not (args.deepseek_api_key or os.environ.get("OPENROUTER_API_KEY")):
+        p.error(
+            "An LLM API key is required for digest mode: set DEEPSEEK_API_KEY or "
+            "OPENROUTER_API_KEY (env or .env), or pass --deepseek-api-key"
+        )
+
+    sys.exit(
+        run(
+            deepseek_api_key=args.deepseek_api_key,
+            telegram_send=args.telegram_send,
+            telegram_bot_token=args.telegram_bot_token,
+            telegram_chat_id=args.telegram_chat_id,
+            min_upvotes=args.min_upvotes,
+            attach_pdf=args.attach_pdf,
+            mode=args.mode,
+            recap_days=args.recap_days,
+            schedule=args.schedule,
+            run_now=args.run_now,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

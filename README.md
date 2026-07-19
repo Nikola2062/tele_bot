@@ -1,1 +1,134 @@
-# tele_bot
+# Telegram Hub
+
+Three formerly standalone projects merged into one service behind a
+**single Telegram bot token**:
+
+| Module | Path | What it does |
+|---|---|---|
+| News bot | `bot/` | Interactive Telegram bot (TypeScript / telegraf). 15+ trending-news sources, SQLite cache ? and the parcel `/track` commands. |
+| DHL watcher | `dhl/` | Python worker. Polls the DHL Shipment Tracking API twice a day for every parcel registered via `/track`, pushes new events to the chat that registered it. |
+| Papers digest | `papers/` | Python worker. Daily Hugging Face trending-papers digest (LLM summaries via OpenRouter or DeepSeek, PDF issue) to a configured chat. |
+
+Each module keeps its original standalone README inside its subdirectory.
+
+## Architecture
+
+Only the **bot** long-polls Telegram (`getUpdates`) ? running two pollers on
+one token breaks with 409 errors. The two Python workers never poll; they only
+*send* messages via the Bot API (`sendMessage`) using the same token.
+
+All three share `./data`:
+
+| File | Written by | Read by |
+|---|---|---|
+| `parcels.json` | bot (`/track`, `/untrack`), dhl (`delivered` flag) | dhl (fresh each poll cycle) |
+| `dhl_state.json` | dhl | dhl (event dedup hashes) |
+| `sent_papers.json` | papers | papers (dedup of sent papers) |
+| `cache.db` | bot | bot (SQLite news cache) |
+
+All JSON files are written atomically (temp file + rename), so cross-process
+reads never see a half-written file.
+
+`parcels.json` schema:
+
+```json
+{
+  "parcels": [
+    {
+      "tracking_number": "00340434161094015902",
+      "chat_id": 123456789,
+      "label": "shoes",
+      "added_at": "2026-07-18T10:00:00.000Z",
+      "delivered": false
+    }
+  ]
+}
+```
+
+## Bot commands
+
+- `/sources`, `/latest <source>`, `/all`, `/stats` ? news features (or just type a source name, e.g. `weibo`)
+- `/track <tracking_number> [label?]` ? register a DHL parcel (8?40 alphanumeric chars); updates arrive in the chat that ran the command
+- `/untrack <tracking_number>` ? stop tracking (only your own chat's parcels)
+- `/parcels` ? list your parcels with label and delivered status
+- `/help` ? full command list
+
+`/all` (or `/latest all`) fetches every implemented source and sends a short
+pretty-formatted digest per source (top 5 headlines each).
+
+When a parcel reaches *delivered*, the DHL worker sends a final
+"delivered ? tracking stopped" message and stops polling it.
+
+## Run it
+
+```bash
+pip install -r requirements.txt   # one-time: python deps for dhl + papers
+cp .env.example .env              # one-time: fill in your keys
+python main.py                    # starts bot + dhl + papers
+```
+
+### Dump all latest news (CLI)
+
+```bash
+python latest_news.py             # pretty-print every source to the terminal
+python latest_news.py --fresh     # bypass cache
+```
+
+### Clean before pushing to GitHub
+
+```bash
+python clean.py --dry-run         # preview
+python clean.py                   # remove node_modules, .venv, dist, caches, ...
+```
+
+Requires Python 3.10+ and Node.js 18+ (`main.py` / `latest_news.py` run
+`npm install` for the bot automatically on first start). Credentials can also
+be passed as parameters instead of `.env`:
+
+```bash
+python main.py \
+  --telegram-token 123456:ABC... \
+  --dhl-key <dhl-api-key> \
+  --openrouter-key sk-or-... \
+  --chat-id <your-chat-id>
+```
+
+The supervisor prefixes each service's logs (`[bot]`, `[dhl]`, `[papers]`),
+restarts a service if it crashes (exponential backoff), skips a service with
+a warning when its credential is missing, and stops everything on Ctrl-C.
+`python main.py --check` validates the config without starting anything.
+
+### Run a single service by hand (debugging)
+
+```bash
+cd bot && npm install && npm start            # needs TELEGRAM_BOT_TOKEN in bot/.env
+
+# dhl worker (env-configured daemon; --once for a single cycle)
+cd dhl && DHL_API_KEY=... TELEGRAM_BOT_TOKEN=... PARCELS_FILE=../data/parcels.json \
+  DHL_STATE_FILE=../data/dhl_state.json python main.py --daemon
+
+# papers worker
+cd papers && python -m src.main --schedule   # reads papers/.env or env vars
+```
+
+The DHL worker's original CLI-args mode (`python main.py --dhl-api-key ? --parcel ?`)
+still works unchanged for one-off manual tracking.
+
+## Environment variables
+
+Copy `.env.example` ? `.env` at the hub root.
+
+| Variable | Used by | Required | Notes |
+|---|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | all | yes | One token from @BotFather for the whole hub |
+| `DHL_API_KEY` | dhl | yes | developer.dhl.com Shipment Tracking key (free tier: 250 calls/day) |
+| `OPENROUTER_API_KEY` | papers | one of the two | Summaries via OpenRouter; default model `poolside/laguna-xs-2.1` |
+| `DEEPSEEK_API_KEY` | papers | one of the two | Summaries via DeepSeek (`deepseek-chat`). Wins when both keys are set, unless `LLM_PROVIDER` says otherwise |
+| `TELEGRAM_CHAT_ID` | papers | yes | Digest target chat(s), comma-separated. Parcel updates ignore this ? they go to the chat that ran `/track`. |
+| `LLM_PROVIDER` | papers | no | Force `openrouter` or `deepseek` when both keys are set |
+| `LLM_MODEL` | papers | no | Model override for either provider, e.g. `poolside/laguna-xs-2.1:free` |
+| `DHL_POLL_TIMES` | dhl | no | Default `06:00,18:00` (Europe/Berlin) |
+| `SCHEDULE_HOUR` / `SCHEDULE_MINUTE` | papers | no | Digest time, default 10:00 (Europe/Berlin) |
+| `PAPERS_PER_DAY`, `MIN_UPVOTES`, `DEEPSEEK_MODEL` | papers | no | Selection / legacy model tuning |
+| `LOG_LEVEL` | bot | no | `info` (default) or `debug` |
+| `DATA_DIR`, `DATABASE_PATH`, `PARCELS_FILE`, `DHL_STATE_FILE`, `SENT_PAPERS_FILE` | all | no | Defaults to `./data`; `main.py` pins these for all children |

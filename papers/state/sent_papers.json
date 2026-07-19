@@ -1,0 +1,51 @@
+{
+  "sent": [
+    {
+      "arxiv_id": "2605.29707",
+      "title": "Domino: Decoupling Causal Modeling from Autoregressive Drafting in Speculative Decoding",
+      "sent_at": "2026-06-02T20:28:08.043990+00:00"
+    },
+    {
+      "arxiv_id": "2605.28556",
+      "title": "A Matter of TASTE: Improving Coverage and Difficulty of Agent Benchmarks",
+      "sent_at": "2026-06-02T20:29:26.133178+00:00"
+    },
+    {
+      "arxiv_id": "2606.02373",
+      "title": "Harness-1: Reinforcement Learning for Search Agents with State-Externalizing Harnesses",
+      "sent_at": "2026-06-02T20:29:32.561017+00:00"
+    },
+    {
+      "arxiv_id": "2605.30501",
+      "title": "Linear Ensembles Wash Away Watermarks: On the Fragility of Distributional Perturbations in LLMs",
+      "sent_at": "2026-06-02T20:29:38.670498+00:00"
+    },
+    {
+      "arxiv_id": "2606.13432",
+      "title": "OmniDirector: General Multi-Shot Camera Cloning without Cross-Paired Data",
+      "upvotes": 91,
+      "arxiv_url": "https://arxiv.org/abs/2606.13432",
+      "hf_url": "https://huggingface.co/papers/2606.13432",
+      "short_intro": "This paper tackles the problem of cloning camera motion from reference videos for multi-shot video generation. Existing methods struggle with multi-shot scenarios or require scarce cross-paired data. The authors propose OmniDirector, a unified framework that uses a novel camera grid representation and is trained on million-scale camera grid-video pairs to achieve director-level control.",
+      "sent_at": "2026-06-15T16:33:14.058952+00:00"
+    },
+    {
+      "arxiv_id": "2606.12384",
+      "title": "APPO: Agentic Procedural Policy Optimization",
+      "upvotes": 61,
+      "arxiv_url": "https://arxiv.org/abs/2606.12384",
+      "hf_url": "https://huggingface.co/papers/2606.12384",
+      "short_intro": "This paper addresses the challenge of credit assignment in multi-turn tool-use for large language model agents. It proposes APPO, a method that identifies fine-grained decision points in sequences for branching and credit assignment, improving agentic reinforcement learning performance.",
+      "sent_at": "2026-06-15T16:33:21.003299+00:00"
+    },
+    {
+      "arxiv_id": "2606.06036",
+      "title": "Memory is Reconstructed, Not Retrieved: Graph Memory for LLM Agents",
+      "upvotes": 53,
+      "arxiv_url": "https://arxiv.org/abs/2606.06036",
+      "hf_url": "https://huggingface.co/papers/2606.06036",
+      "short_intro": "LLM agents struggle to reason over long interaction histories because current memory systems use a static retrieve-then-reason approach. This paper introduces MRAgent, which represents memory as a graph and uses an active reconstruction mechanism to dynamically adapt memory access during reasoning. The framework significantly improves performance on long-horizon memory tasks while reducing token and runtime costs.",
+      "sent_at": "2026-06-15T16:33:37.573245+00:00"
+    }
+  ]
+}
