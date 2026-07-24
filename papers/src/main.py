@@ -346,12 +346,6 @@ def _run_scheduler(
         if _STOP_REQUESTED:
             break
 
-        _notify_next_run(
-            log,
-            telegram_send=telegram_send,
-            token=telegram_bot_token,
-            chat_ids=telegram_chat_id,
-        )
         last_exit = _execute_once(
             log=log,
             deepseek_api_key=deepseek_api_key,
@@ -407,13 +401,6 @@ def run(
             recap_days=recap_days,
             run_now=run_now,
         )
-
-    _notify_next_run(
-        log,
-        telegram_send=telegram_send,
-        token=telegram_bot_token,
-        chat_ids=telegram_chat_id,
-    )
 
     try:
         return _execute_once(
