@@ -8,6 +8,7 @@ interface WeiboResponse {
       card_group: Array<{
         card_type: number
         desc?: string
+        desc_extr?: string | number
         scheme: string
         icon?: string
         actionlog?: {
@@ -46,6 +47,11 @@ export default defineSource(async (): Promise<NewsItem[]> => {
         url: `https://s.weibo.com/weibo?q=${encodeURIComponent(`#${item.desc}#`)}`,
         mobileUrl: item.scheme,
         extra: {
+          // desc_extr is a heat value / status tag (热 / 新 / 沸 / a number) —
+          // the only extra signal a hot-search keyword row carries.
+          info: item.desc_extr != null && `${item.desc_extr}`.trim()
+            ? `🔥 ${item.desc_extr}`
+            : undefined,
           icon: item.icon ? {
             url: proxyPicture(item.icon),
             scale: 1.5

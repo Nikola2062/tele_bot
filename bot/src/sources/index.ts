@@ -16,6 +16,13 @@ import coolapkSource from "./coolapk"
 import hupuSource from "./hupu"
 import producthuntSource from "./producthunt"
 import toutiaoSource from "./toutiao"
+import bbcworldSource from "./bbcworld"
+import bbczhSource from "./bbczh"
+import dwSource from "./dw"
+import dwdeSource from "./dwde"
+import dwzhSource from "./dwzh"
+import tagesschauSource from "./tagesschau"
+import zdfSource from "./zdf"
 
 // Source getters registry
 export const sourceGetters: Record<SourceID, SourceGetter> = {
@@ -34,6 +41,13 @@ export const sourceGetters: Record<SourceID, SourceGetter> = {
   "hupu": hupuSource,
   "producthunt": producthuntSource,
   "toutiao": toutiaoSource,
+  "bbcworld": bbcworldSource,
+  "bbczh": bbczhSource,
+  "dw": dwSource,
+  "dwde": dwdeSource,
+  "dwzh": dwzhSource,
+  "tagesschau": tagesschauSource,
+  "zdf": zdfSource,
   // Placeholder implementations for other sources
   // These should be implemented based on newsnow's source files
   "tieba": async () => { throw new Error("百度贴吧 source not implemented yet") },

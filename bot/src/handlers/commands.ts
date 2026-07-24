@@ -1,7 +1,7 @@
 import { Context } from "telegraf"
 import type { SourceID } from "../shared/types"
 import { sourceManager } from "../shared/sourceManager"
-import { sources, getSourceDisplayName, getAllSourceIds } from "../shared/sources"
+import { sources, getSourceDisplayName, getAllSourceIds, INTERNATIONAL_SOURCES } from "../shared/sources"
 import { formatNewsForTelegram, logger } from "../utils/index"
 
 export class CommandHandlers {
@@ -18,6 +18,7 @@ I can help you get the latest trending news from various sources in real-time.
 • \`/help\` - Show this help message
 • \`/sources\` - List all available news sources
 • \`/latest <source>\` - Get latest news from a specific source
+• \`/world\` - World-news digest (BBC, DW, ARD, ZDF)
 • \`/all\` - Latest headlines from all sources
 • \`/stats\` - Show cache statistics
 • \`/track <number> [label]\` - Track a DHL parcel
@@ -55,6 +56,7 @@ Just type a source name to get started! 🚀
 • \`/help\` - Show this help
 • \`/sources\` - List all available sources
 • \`/latest <source>\` - Get news from specific source
+• \`/world\` - World-news digest (BBC, DW, ARD, ZDF)
 • \`/all\` - Latest headlines from all sources
 • \`/stats\` - Show cache statistics
 
@@ -100,6 +102,7 @@ Type \`/sources\` to see all available sources!
 
     // Group sources by type/category for better display
     const sourcesByCategory: Record<string, string[]> = {
+      'International (World)': ['tagesschau', 'zdf', 'dwde', 'bbcworld', 'dw', 'bbczh', 'dwzh'],
       'Chinese Social': ['douyin', 'weibo', 'zhihu', 'hupu', 'tieba'],
       'Tech & Dev': ['github', 'hackernews', 'ithome', 'v2ex', 'juejin'],
       'News & Media': ['thepaper', 'toutiao', 'zaobao', 'cankaoxiaoxi'],
@@ -223,6 +226,52 @@ Type \`/sources\` to see all available sources!
     }
 
     await ctx.reply(`Done: ${ok} ok, ${failed} failed / ${availableSources.length} sources.`)
+  }
+
+  /**
+   * Handle /world — a curated digest from international broadcasters
+   * (ARD/Tagesschau, ZDF, DW, BBC) instead of the trending/hot-search lists.
+   */
+  async handleWorld(ctx: Context) {
+    const worldSources = INTERNATIONAL_SOURCES.filter(id => sourceManager.isValidSource(id))
+    if (worldSources.length === 0) {
+      await ctx.reply('No international sources are currently available.')
+      return
+    }
+
+    await ctx.reply(`🌍 Fetching world news from ${worldSources.length} broadcasters…`)
+    await ctx.sendChatAction('typing')
+
+    let ok = 0
+    let failed = 0
+
+    for (const sourceId of worldSources) {
+      try {
+        await ctx.sendChatAction('typing')
+        const response = await sourceManager.getSourceNews(sourceId)
+        const sourceName = getSourceDisplayName(sourceId)
+
+        if (response.status === 'error') {
+          failed++
+          await ctx.reply(`**${sourceName}** — failed: ${response.error || 'unknown'}`, { parse_mode: 'Markdown' })
+          continue
+        }
+
+        ok++
+        const formatted = formatNewsForTelegram(response.items, sourceName, 5)
+        const msg = formatted.length > 4000 ? formatted.slice(0, 3990) + '\n\n…' : formatted
+        await ctx.reply(msg, {
+          parse_mode: 'Markdown',
+          link_preview_options: { is_disabled: true }
+        })
+      } catch (error) {
+        failed++
+        logger.error(`Error in /world for ${sourceId}:`, error)
+        await ctx.reply(`**${sourceId}** — error fetching.`, { parse_mode: 'Markdown' })
+      }
+    }
+
+    await ctx.reply(`Done: ${ok} ok, ${failed} failed / ${worldSources.length} broadcasters.`)
   }
 
   /**

@@ -21,7 +21,9 @@ export default defineSource(async (): Promise<NewsItem[]> => {
     $main.each((_, el) => {
       const $el = $(el)
       const $titleLink = $el.find("> h2 a")
-      const title = $titleLink.text().replace(/\n+/g, "").trim()
+      // Collapse the whitespace GitHub inserts between owner and repo
+      // ("block /      buzz" -> "block / buzz").
+      const title = $titleLink.text().replace(/\s+/g, " ").trim()
       const url = $titleLink.attr("href")
       const star = $el.find("[href$=stargazers]").text().replace(/\s+/g, "").trim()
       const desc = $el.find("> p").text().replace(/\n+/g, "").trim()

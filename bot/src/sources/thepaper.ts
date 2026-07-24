@@ -7,6 +7,7 @@ interface ThePaperResponse {
       contId: string
       name: string
       pubTimeLong: string
+      tagList?: { tag: string }[]
     }[]
   }
 }
@@ -27,12 +28,18 @@ export default defineSource(async (): Promise<NewsItem[]> => {
       throw new Error('Invalid response format')
     }
     
-    return res.data.hotNews.map((item) => ({
-      id: item.contId,
-      title: item.name,
-      url: `https://www.thepaper.cn/newsDetail_forward_${item.contId}`,
-      mobileUrl: `https://m.thepaper.cn/newsDetail_forward_${item.contId}`
-    }))
+    return res.data.hotNews.map((item) => {
+      // 澎湃 hot items are often cryptic editorial titles with no summary in
+      // the payload; surface the topic tags as lightweight context instead.
+      const tags = (item.tagList ?? []).map(t => t.tag).filter(Boolean).slice(0, 3)
+      return {
+        id: item.contId,
+        title: item.name,
+        url: `https://www.thepaper.cn/newsDetail_forward_${item.contId}`,
+        mobileUrl: `https://m.thepaper.cn/newsDetail_forward_${item.contId}`,
+        extra: tags.length ? { info: `#${tags.join(" #")}` } : undefined
+      }
+    })
   } catch (error) {
     console.error('Failed to fetch 澎湃新闻:', error)
     throw error

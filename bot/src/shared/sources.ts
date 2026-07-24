@@ -204,8 +204,67 @@ export const sources: Record<SourceID, Source> = {
     name: "远景论坛",
     color: "blue",
     interval: Time.Default
+  },
+
+  // ---- International broadcasters (RSS) ----
+  "bbcworld": {
+    name: "BBC News",
+    title: "World",
+    color: "red",
+    interval: Time.Common,
+    home: "https://www.bbc.com/news/world"
+  },
+  "bbczh": {
+    name: "BBC 中文",
+    color: "red",
+    interval: Time.Common,
+    home: "https://www.bbc.com/zhongwen/trad"
+  },
+  "dw": {
+    name: "DW",
+    title: "English",
+    color: "blue",
+    interval: Time.Common,
+    home: "https://www.dw.com/en"
+  },
+  "dwde": {
+    name: "DW",
+    title: "Deutsch",
+    color: "blue",
+    interval: Time.Common,
+    home: "https://www.dw.com/de"
+  },
+  "dwzh": {
+    name: "DW 中文",
+    color: "blue",
+    interval: Time.Common,
+    home: "https://www.dw.com/zh"
+  },
+  "tagesschau": {
+    name: "Tagesschau",
+    title: "ARD",
+    color: "blue",
+    interval: Time.Common,
+    home: "https://www.tagesschau.de"
+  },
+  "zdf": {
+    name: "ZDFheute",
+    color: "orange",
+    interval: Time.Common,
+    home: "https://www.zdfheute.de"
   }
 }
+
+/** International broadcaster sources surfaced together by the /world command. */
+export const INTERNATIONAL_SOURCES: SourceID[] = [
+  "tagesschau",
+  "zdf",
+  "dwde",
+  "bbcworld",
+  "dw",
+  "bbczh",
+  "dwzh",
+]
 
 // Helper function to get source by ID
 export function getSource(id: SourceID): Source | undefined {

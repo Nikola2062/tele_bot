@@ -1,4 +1,5 @@
 import { $fetch } from "ofetch"
+import { XMLParser } from "fast-xml-parser"
 import type { NewsItem } from "../shared/types"
 import { consola } from "consola"
 import process from "node:process"
@@ -32,18 +33,108 @@ export function defineSource(source: () => Promise<NewsItem[]>) {
   return source
 }
 
-// RSS utilities
-export async function rss2json(url: string) {
-  // Simplified RSS to JSON conversion
-  try {
-    const response = await myFetch(url)
-    // This would need a proper RSS parser implementation
-    // For now, return empty to maintain interface
-    return { items: [] }
-  } catch (error) {
-    consola.error('RSS parsing failed:', error)
-    return { items: [] }
+// RSS utilities ---------------------------------------------------------------
+
+const xmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  trimValues: true,
+})
+
+function asArray<T>(value: T | T[] | undefined | null): T[] {
+  if (value == null) return []
+  return Array.isArray(value) ? value : [value]
+}
+
+/**
+ * Decode HTML entities left over after XML parsing. Some feeds (e.g. ZDF)
+ * double-encode, so a title arrives as "T&#252;rkei" — decode numeric
+ * (&#252; / &#xF6;) and the common named entities to real characters.
+ */
+function decodeEntities(text: string): string {
+  const named: Record<string, string> = {
+    "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
+    "&apos;": "'", "&nbsp;": " ", "&mdash;": "—", "&ndash;": "–",
+    "&hellip;": "…", "&laquo;": "«", "&raquo;": "»", "&szlig;": "ß",
   }
+  return text
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&[a-zA-Z]+;/g, m => named[m] ?? m)
+}
+
+/** Extract plain text from a node that may be a string, number, CDATA object or attribute-bearing object. */
+function nodeText(node: any): string {
+  if (node == null) return ""
+  if (typeof node === "string") return node
+  if (typeof node === "number") return String(node)
+  if (typeof node === "object") return node["#text"] ?? node["@_href"] ?? ""
+  return String(node)
+}
+
+/** Resolve a link from RSS 2.0 (<link>text), RDF (<link>text) or Atom (<link href=…>) shapes. */
+function nodeLink(link: any): string {
+  if (Array.isArray(link)) {
+    const alternate = link.find(l => l?.["@_rel"] === "alternate") ?? link.find(l => l?.["@_href"])
+    return alternate?.["@_href"] ?? nodeText(link[0])
+  }
+  if (link && typeof link === "object") return link["@_href"] ?? link["#text"] ?? ""
+  return nodeText(link)
+}
+
+/**
+ * Fetch and parse an RSS 2.0 / RDF (RSS 1.0) / Atom feed into NewsItem[].
+ * Shared by all broadcaster sources (BBC, DW, ARD/Tagesschau, ZDF).
+ */
+export async function fetchRSS(url: string, options: any = {}): Promise<NewsItem[]> {
+  const raw = await myFetch(url, { ...options, responseType: "text" })
+  const xml = typeof raw === "string" ? raw : String(raw)
+  const parsed = xmlParser.parse(xml)
+
+  let rawItems: any[] = []
+  if (parsed?.rss?.channel) rawItems = asArray(parsed.rss.channel.item)      // RSS 2.0
+  else if (parsed?.["rdf:RDF"]) rawItems = asArray(parsed["rdf:RDF"].item)   // RDF / RSS 1.0 (DW)
+  else if (parsed?.feed) rawItems = asArray(parsed.feed.entry)               // Atom
+  else if (parsed?.channel) rawItems = asArray(parsed.channel.item)
+
+  const items: NewsItem[] = []
+  const seen = new Set<string>()
+
+  for (const it of rawItems) {
+    const title = decodeEntities(nodeText(it.title)).replace(/\s+/g, " ").trim()
+    const url = nodeLink(it.link) || nodeText(it.guid) || nodeText(it.id)
+    if (!title || !url || seen.has(url)) continue
+    seen.add(url)
+
+    const item: NewsItem = {
+      id: nodeText(it.guid) || nodeText(it.id) || url,
+      title,
+      url,
+    }
+
+    // RSS <description> / Atom <summary> — a 1-2 sentence teaser. Strip any
+    // HTML markup and decode entities, then drop it if it is empty or merely
+    // repeats the title.
+    const rawSummary = nodeText(it.description || it.summary || it["content:encoded"])
+    if (rawSummary) {
+      const summary = decodeEntities(rawSummary.replace(/<[^>]*>/g, " "))
+        .replace(/\s+/g, " ")
+        .trim()
+      if (summary && summary.toLowerCase() !== title.toLowerCase()) {
+        item.description = summary
+      }
+    }
+
+    const dateStr = nodeText(it.pubDate || it["dc:date"] || it.published || it.updated || it.date)
+    if (dateStr) {
+      const t = new Date(dateStr).getTime()
+      if (!Number.isNaN(t)) item.pubDate = t
+    }
+
+    items.push(item)
+  }
+
+  return items
 }
 
 // Date parsing utilities

@@ -60,14 +60,21 @@ export default defineSource(async (): Promise<NewsItem[]> => {
     
     return res.data
       .filter(item => item.id) // Filter valid items
-      .map(item => ({
-        id: item.id,
-        title: item.editor_title || load(item.message).text().split("\n")[0] || item.message.substring(0, 50),
-        url: `https://www.coolapk.com${item.url}`,
-        extra: {
-          info: item.targetRow?.subTitle
+      .map(item => {
+        const title = item.editor_title || load(item.message).text().split("\n")[0] || item.message.substring(0, 50)
+        // The full post text is already in the payload; use it as a teaser
+        // when it adds something beyond the (often derived) title.
+        const body = item.message ? load(item.message).text().replace(/\s+/g, " ").trim() : ""
+        return {
+          id: item.id,
+          title,
+          url: `https://www.coolapk.com${item.url}`,
+          description: body && body !== title.trim() ? body : undefined,
+          extra: {
+            info: item.targetRow?.subTitle
+          }
         }
-      }))
+      })
   } catch (error) {
     console.error('Failed to fetch CoolApk trending:', error)
     throw error

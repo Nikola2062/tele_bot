@@ -6,6 +6,8 @@ export interface NewsItem {
   title: string
   url: string
   mobileUrl?: string
+  /** Short summary/snippet (e.g. RSS <description>), cleaned of HTML. */
+  description?: string
   pubDate?: number | string
   extra?: {
     hover?: string
@@ -89,6 +91,14 @@ export type SourceID =
   | "linuxdo"
   | "nowcoder"
   | "pcbeta"
+  // International broadcasters (RSS)
+  | "bbcworld"
+  | "bbczh"
+  | "dw"
+  | "dwde"
+  | "dwzh"
+  | "tagesschau"
+  | "zdf"
 
 export interface CacheInfo {
   id: SourceID

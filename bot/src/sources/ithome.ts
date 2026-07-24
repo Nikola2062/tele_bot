@@ -1,6 +1,6 @@
 import { load } from "cheerio"
 import type { NewsItem } from "../shared/types"
-import { defineSource, myFetch, parseRelativeDate } from "../utils/index"
+import { defineSource, myFetch, parseRelativeDate, fetchRSS } from "../utils/index"
 
 export default defineSource(async (): Promise<NewsItem[]> => {
   try {
@@ -38,6 +38,20 @@ export default defineSource(async (): Promise<NewsItem[]> => {
       }
     })
     
+    // The /list/ page carries only titles. The RSS feed carries a full
+    // article body per item under the same article URL, so join them by URL
+    // (one extra list call, no per-article fetches) to add a teaser.
+    try {
+      const rss = await fetchRSS("https://www.ithome.com/rss/")
+      const byUrl = new Map(rss.filter(it => it.description).map(it => [it.url, it.description!]))
+      for (const item of news) {
+        const desc = byUrl.get(item.url)
+        if (desc) item.description = desc
+      }
+    } catch (error) {
+      console.error('IT之家 RSS enrichment failed (keeping titles):', error)
+    }
+
     // Sort by publication date (most recent first)
     return news.sort((a, b) => (Number(b.pubDate) || 0) - (Number(a.pubDate) || 0))
   } catch (error) {

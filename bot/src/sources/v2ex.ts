@@ -41,6 +41,11 @@ export default defineSource(async (): Promise<NewsItem[]> => {
         id: item.id,
         title: item.title,
         url: item.url,
+        // The feed already ships the post body; surface a plain-text teaser
+        // instead of discarding it (used by the daily digest).
+        description: item.content_html
+          ? item.content_html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim()
+          : undefined,
         extra: {
           date: new Date(item.date_modified ?? item.date_published).getTime()
         }
