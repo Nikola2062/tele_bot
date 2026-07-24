@@ -92,6 +92,8 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
             "PARCELS_FILE": str(DATA / "parcels.json"),
             "DHL_STATE_FILE": str(DATA / "dhl_state.json"),
             "SENT_PAPERS_FILE": str(DATA / "sent_papers.json"),
+            "SUBSCRIPTIONS_FILE": str(DATA / "subscriptions.json"),
+            "NEWS_STATE_FILE": str(DATA / "news_digest_state.json"),
         }
     )
     return env

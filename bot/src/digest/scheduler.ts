@@ -49,6 +49,19 @@ export class DigestScheduler {
     }
   }
 
+  /**
+   * Ping the "next run" time to the chat after a push, mirroring the papers
+   * worker's `⏰ Next message at …` (papers/src/main.py: _notify_next_run).
+   * Since the digest just fired at `hm` today, the next run is tomorrow at `hm`.
+   */
+  private async notifyNextRun(chatId: number, hm: string): Promise<void> {
+    try {
+      await this.bot.telegram.sendMessage(chatId, `⏰ Next news digest: ${nextRunLabel(hm)}`)
+    } catch (error) {
+      logger.error(`digest: next-run ping to ${chatId} failed:`, error)
+    }
+  }
+
   private async tick(): Promise<void> {
     if (this.ticking) return // never overlap two ticks
     this.ticking = true
@@ -65,6 +78,7 @@ export class DigestScheduler {
         } catch (error) {
           logger.error(`digest: scheduled push to ${sub.chat_id} failed:`, error)
         }
+        await this.notifyNextRun(sub.chat_id, sub.time)
       }
 
       // 2. Auto "after papers" push.
@@ -78,6 +92,7 @@ export class DigestScheduler {
           } catch (error) {
             logger.error(`digest: auto push to ${chatId} failed:`, error)
           }
+          await this.notifyNextRun(chatId, autoTime())
         }
       }
     } catch (error) {
@@ -97,6 +112,19 @@ function autoTime(): string {
   const hh = String(Math.floor(total / 60)).padStart(2, "0")
   const mm = String(total % 60).padStart(2, "0")
   return `${hh}:${mm}`
+}
+
+/** Label for the next fire of `hm` (tomorrow, since it just fired today). */
+function nextRunLabel(hm: string): string {
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
+  const dateStr = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Berlin",
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(tomorrow)
+  return `${dateStr}, ${hm} (Europe/Berlin)`
 }
 
 /** Chats for the auto push: DIGEST_AUTO_CHAT_ID or the papers TELEGRAM_CHAT_ID. */

@@ -24,6 +24,8 @@ All three share `./data`:
 | `parcels.json` | bot (`/track`, `/untrack`), dhl (`delivered` flag) | dhl (fresh each poll cycle) |
 | `dhl_state.json` | dhl | dhl (event dedup hashes) |
 | `sent_papers.json` | papers | papers (dedup of sent papers) |
+| `subscriptions.json` | bot (`/subscribe`, `/unsubscribe`) | bot (news-digest scheduler) |
+| `news_digest_state.json` | bot | bot (per-chat headline dedup) |
 | `cache.db` | bot | bot (SQLite news cache) |
 
 All JSON files are written atomically (temp file + rename), so cross-process
@@ -47,7 +49,18 @@ reads never see a half-written file.
 
 ## Bot commands
 
-- `/sources`, `/latest <source>`, `/all`, `/stats` ? news features (or just type a source name, e.g. `weibo`)
+- `/sources`, `/latest <source>`, `/world`, `/all`, `/stats` ? news features (or just type a source name, e.g. `weibo`)
+- `/world` ? curated digest from international broadcasters (Tagesschau/ARD, ZDF, DW en/de/zh, BBC World, BBC Chinese) instead of the Chinese trending/hot-search lists
+- `/subscribe [HH:MM]` ? opt this chat into a **daily news digest** pushed at `HH:MM` Europe/Berlin (default `08:00`). One coalesced HTML digest across every implemented source, grouped into 🌍 World (BBC, DW, ARD/Tagesschau, ZDF), 💻 Tech & Dev (Hacker News, GitHub, Product Hunt, V2EX, 掘金, IT之家) and 🇨🇳 China trending (微博, 知乎, 抖音, 百度, 今日头条, 澎湃, 哔哩哔哩, …) ? each in its original language, with the RSS teaser under each broadcaster headline, deduped per chat so you only see headlines new since your last digest.
+- `/unsubscribe`, `/mydigest` ? stop / show this chat's digest subscription
+- `/digestnow` ? send the news digest right now (respects the per-chat dedup)
+
+**Optional LLM clustering.** If `OPENROUTER_API_KEY` is set, the digest adds a
+"Top stories" section that groups the same event across sources (e.g. one story
+carried by 抖音 + 百度 + BBC becomes a single line with all three links) and
+summarizes it. Model defaults to `poolside/laguna-s-2.1:free` (override with
+`DIGEST_LLM_MODEL`). Fully opt-in and fail-safe: no key, or any API error, and
+the digest falls back to the plain grouped layout ? nothing breaks.
 - `/track <tracking_number> [label?]` ? register a DHL parcel (8?40 alphanumeric chars); updates arrive in the chat that ran the command
 - `/untrack <tracking_number>` ? stop tracking (only your own chat's parcels)
 - `/parcels` ? list your parcels with label and delivered status
