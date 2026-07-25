@@ -80,6 +80,44 @@ cp .env.example .env              # one-time: fill in your keys
 python main.py                    # starts bot + dhl + papers
 ```
 
+### Daily news digest (scheduled push)
+
+The news digest is an **in-process scheduler inside the `bot` service** (not a
+separate process/cron) — so it only fires while `python main.py` is running.
+Keep the hub alive (nohup / tmux / systemd); a missed slot is skipped, not
+caught up.
+
+The digest is pushed automatically **one hour after the papers digest** — this
+is **on by default** and fires as long as `TELEGRAM_CHAT_ID` is set. Nothing to
+enable; just run the hub:
+
+```bash
+python main.py --openrouter-key sk-or-...   # --openrouter-key is optional (enables clustering)
+```
+
+To **disable** it (or change the offset/target), set in the hub's environment:
+
+```bash
+echo 'DIGEST_AUTO=false' >> .env    # or Environment=DIGEST_AUTO=false in your systemd unit
+```
+
+Every run is traced to **`data/digest.log`** (Europe/Berlin). Check the first
+line after a restart to confirm it's armed:
+
+```bash
+tail -f data/digest.log
+# ✅ scheduler started — auto push ARMED at 11:00 to <chat>; N subscription(s)
+# ❌ scheduler started — auto push DISABLED (set DIGEST_AUTO=true and TELEGRAM_CHAT_ID); ...
+```
+
+The log also records each `FIRE`, `run end` (delivered count + layout), the
+`next run` time, and any `ERROR` — so a silent day is traceable: no log file =
+hub wasn't running; `DISABLED` = flag/chat missing; `ARMED` but no `FIRE` at the
+scheduled time = process wasn't alive then.
+
+Chats can also opt in individually with `/subscribe [HH:MM]` regardless of
+`DIGEST_AUTO`.
+
 ### Dump all latest news (CLI)
 
 ```bash
@@ -135,13 +173,17 @@ Copy `.env.example` ? `.env` at the hub root.
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | all | yes | One token from @BotFather for the whole hub |
 | `DHL_API_KEY` | dhl | yes | developer.dhl.com Shipment Tracking key (free tier: 250 calls/day) |
-| `OPENROUTER_API_KEY` | papers | one of the two | Summaries via OpenRouter; default model `poolside/laguna-xs-2.1` |
+| `OPENROUTER_API_KEY` | papers, bot | one of the two | Paper summaries via OpenRouter; also enables **news-digest clustering** (a "Top stories" section grouping the same story across sources). Optional for the bot — without it the digest still sends, plain |
 | `DEEPSEEK_API_KEY` | papers | one of the two | Summaries via DeepSeek (`deepseek-chat`). Wins when both keys are set, unless `LLM_PROVIDER` says otherwise |
-| `TELEGRAM_CHAT_ID` | papers | yes | Digest target chat(s), comma-separated. Parcel updates ignore this ? they go to the chat that ran `/track`. |
+| `TELEGRAM_CHAT_ID` | papers, bot | yes | Papers digest target chat(s), comma-separated; also the default target for the auto news digest. Parcel updates ignore this ? they go to the chat that ran `/track`. |
 | `LLM_PROVIDER` | papers | no | Force `openrouter` or `deepseek` when both keys are set |
 | `LLM_MODEL` | papers | no | Model override for either provider, e.g. `poolside/laguna-xs-2.1:free` |
 | `DHL_POLL_TIMES` | dhl | no | Default `06:00,18:00` (Europe/Berlin) |
-| `SCHEDULE_HOUR` / `SCHEDULE_MINUTE` | papers | no | Digest time, default 10:00 (Europe/Berlin) |
+| `SCHEDULE_HOUR` / `SCHEDULE_MINUTE` | papers, bot | no | Papers digest time, default 10:00 (Europe/Berlin). The auto news digest is derived from this + `DIGEST_AFTER_PAPERS_MIN` |
+| `DIGEST_AUTO` | bot | no | Automatic news digest to `TELEGRAM_CHAT_ID`, **on by default**; set `false` to disable. See *Daily news digest* above |
+| `DIGEST_AFTER_PAPERS_MIN` | bot | no | Minutes after the papers digest to push the news digest (default `60` = one hour) |
+| `DIGEST_AUTO_CHAT_ID` | bot | no | Override the auto-digest target chat(s) (default: `TELEGRAM_CHAT_ID`) |
+| `DIGEST_LLM_MODEL` | bot | no | Clustering model override (default `poolside/laguna-s-2.1:free`) |
 | `PAPERS_PER_DAY`, `MIN_UPVOTES`, `DEEPSEEK_MODEL` | papers | no | Selection / legacy model tuning |
 | `LOG_LEVEL` | bot | no | `info` (default) or `debug` |
-| `DATA_DIR`, `DATABASE_PATH`, `PARCELS_FILE`, `DHL_STATE_FILE`, `SENT_PAPERS_FILE` | all | no | Defaults to `./data`; `main.py` pins these for all children |
+| `DATA_DIR`, `DATABASE_PATH`, `PARCELS_FILE`, `DHL_STATE_FILE`, `SENT_PAPERS_FILE`, `SUBSCRIPTIONS_FILE`, `NEWS_STATE_FILE`, `DIGEST_LOG_FILE` | all | no | Defaults under `./data` (incl. the digest run log `digest.log`); `main.py` pins these for all children |

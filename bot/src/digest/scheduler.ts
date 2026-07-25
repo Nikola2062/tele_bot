@@ -38,9 +38,12 @@ export class DigestScheduler {
     if (auto.length > 0) {
       logger.info(`news digest scheduler started; auto push at ${autoTime()} (Europe/Berlin) to ${auto.join(", ")}`)
       digestLog(`scheduler started — auto push ARMED at ${autoTime()} to ${auto.join(", ")}; ${subs} subscription(s)`)
+    } else if (!autoEnabled()) {
+      logger.info("news digest scheduler started (auto push disabled via DIGEST_AUTO)")
+      digestLog(`scheduler started — auto push DISABLED (DIGEST_AUTO set to false); ${subs} subscription(s)`)
     } else {
-      logger.info("news digest scheduler started (checks every 60s, Europe/Berlin)")
-      digestLog(`scheduler started — auto push DISABLED (set DIGEST_AUTO=true and TELEGRAM_CHAT_ID); ${subs} subscription(s)`)
+      logger.info("news digest scheduler started (auto push has no target chat)")
+      digestLog(`scheduler started — auto push has NO TARGET (set TELEGRAM_CHAT_ID or DIGEST_AUTO_CHAT_ID); ${subs} subscription(s)`)
     }
     // A plain 60s interval is close enough for a once-a-day digest, no cron dep.
     this.timer = setInterval(() => void this.tick(), 60 * 1000)
@@ -139,9 +142,18 @@ function nextRunLabel(hm: string): string {
   return `${dateStr}, ${hm} (Europe/Berlin)`
 }
 
+/**
+ * Whether the auto push is enabled. ON BY DEFAULT — disabled only when
+ * DIGEST_AUTO is explicitly set to a falsy value (false/0/no/off).
+ */
+function autoEnabled(): boolean {
+  const v = (process.env.DIGEST_AUTO ?? "").trim().toLowerCase()
+  return !["false", "0", "no", "off"].includes(v)
+}
+
 /** Chats for the auto push: DIGEST_AUTO_CHAT_ID or the papers TELEGRAM_CHAT_ID. */
 function autoChats(): number[] {
-  if ((process.env.DIGEST_AUTO ?? "").trim().toLowerCase() !== "true") return []
+  if (!autoEnabled()) return []
   const raw = process.env.DIGEST_AUTO_CHAT_ID || process.env.TELEGRAM_CHAT_ID || ""
   return raw
     .split(",")
