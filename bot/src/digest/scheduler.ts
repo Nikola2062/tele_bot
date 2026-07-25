@@ -3,6 +3,7 @@ import { logger } from "../utils/index"
 import { berlinNow } from "./time"
 import { listSubscriptions, markSent } from "./subscriptions"
 import { sendDigest } from "./digest"
+import { digestLog } from "./runlog"
 
 /**
  * Daily news-digest scheduler — the news counterpart to the papers worker's
@@ -33,10 +34,13 @@ export class DigestScheduler {
   start(): void {
     if (this.timer) return
     const auto = autoChats()
+    const subs = listSubscriptions().length
     if (auto.length > 0) {
       logger.info(`news digest scheduler started; auto push at ${autoTime()} (Europe/Berlin) to ${auto.join(", ")}`)
+      digestLog(`scheduler started — auto push ARMED at ${autoTime()} to ${auto.join(", ")}; ${subs} subscription(s)`)
     } else {
       logger.info("news digest scheduler started (checks every 60s, Europe/Berlin)")
+      digestLog(`scheduler started — auto push DISABLED (set DIGEST_AUTO=true and TELEGRAM_CHAT_ID); ${subs} subscription(s)`)
     }
     // A plain 60s interval is close enough for a once-a-day digest, no cron dep.
     this.timer = setInterval(() => void this.tick(), 60 * 1000)
@@ -55,8 +59,10 @@ export class DigestScheduler {
    * Since the digest just fired at `hm` today, the next run is tomorrow at `hm`.
    */
   private async notifyNextRun(chatId: number, hm: string): Promise<void> {
+    const label = nextRunLabel(hm)
+    digestLog(`next run for chat ${chatId}: ${label}`)
     try {
-      await this.bot.telegram.sendMessage(chatId, `⏰ Next news digest: ${nextRunLabel(hm)}`)
+      await this.bot.telegram.sendMessage(chatId, `⏰ Next news digest: ${label}`)
     } catch (error) {
       logger.error(`digest: next-run ping to ${chatId} failed:`, error)
     }
@@ -72,11 +78,14 @@ export class DigestScheduler {
       for (const sub of listSubscriptions()) {
         if (sub.time !== hm || sub.last_sent_date === date) continue
         markSent(sub.chat_id, date)
+        digestLog(`FIRE subscription push -> chat ${sub.chat_id} at ${hm}`)
         try {
           const n = await sendDigest(this.bot.telegram, sub.chat_id)
           logger.info(`digest: scheduled push to ${sub.chat_id} at ${hm} (${n} headlines)`)
         } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error)
           logger.error(`digest: scheduled push to ${sub.chat_id} failed:`, error)
+          digestLog(`ERROR subscription push -> chat ${sub.chat_id}: ${msg}`)
         }
         await this.notifyNextRun(sub.chat_id, sub.time)
       }
@@ -86,11 +95,14 @@ export class DigestScheduler {
         for (const chatId of autoChats()) {
           if (this.autoSent.get(chatId) === date) continue
           this.autoSent.set(chatId, date)
+          digestLog(`FIRE auto push (after papers) -> chat ${chatId} at ${hm}`)
           try {
             const n = await sendDigest(this.bot.telegram, chatId)
             logger.info(`digest: auto push (after papers) to ${chatId} at ${hm} (${n} headlines)`)
           } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error)
             logger.error(`digest: auto push to ${chatId} failed:`, error)
+            digestLog(`ERROR auto push -> chat ${chatId}: ${msg}`)
           }
           await this.notifyNextRun(chatId, autoTime())
         }

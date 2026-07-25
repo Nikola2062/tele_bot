@@ -6,6 +6,7 @@ import { logger } from "../utils/index"
 import { berlinNow } from "./time"
 import { filterUnseen, markSeen } from "./state"
 import { clusteringEnabled, clusterStories, type Cluster, type DigestEntry } from "./cluster"
+import { digestLog } from "./runlog"
 
 /**
  * Builds and delivers the daily news digest — the push counterpart to the
@@ -317,11 +318,13 @@ export async function sendDigest(
   chatId: number,
   opts: { notifyEmpty?: boolean } = {}
 ): Promise<number> {
+  digestLog(`run start -> chat ${chatId}`)
   const { blocks, failed } = await buildBlocks(chatId)
   const total = blocks.reduce((n, b) => n + b.items.length, 0)
 
   if (total === 0) {
     logger.info(`digest: no new headlines for chat ${chatId}`)
+    digestLog(`run end -> chat ${chatId}: 0 new headlines (${failed} source(s) failed); nothing sent`)
     if (opts.notifyEmpty) {
       await telegram.sendMessage(chatId, "🗞️ No new headlines since your last digest.")
     }
@@ -334,6 +337,7 @@ export async function sendDigest(
   // Opt-in LLM clustering: if it succeeds, use the clustered layout; on any
   // failure clusterStories() returns null and we render the plain digest.
   let messages: string[]
+  let layout = "plain"
   if (clusteringEnabled()) {
     const flat = blocks.flatMap(b => b.items.map(item => ({ block: b, item })))
     const itemIndex = new Map<NewsItem, number>(flat.map((f, i) => [f.item, i]))
@@ -345,18 +349,29 @@ export async function sendDigest(
       url: item.mobileUrl || item.url,
     }))
     const clusters: Cluster[] | null = await clusterStories(entries)
-    messages = clusters
-      ? renderClustered(blocks, entries, itemIndex, clusters, meta)
-      : renderMessages(blocks, meta)
+    if (clusters) {
+      messages = renderClustered(blocks, entries, itemIndex, clusters, meta)
+      layout = `clustered (${clusters.length} clusters)`
+    } else {
+      messages = renderMessages(blocks, meta)
+      layout = "plain (clustering fell back)"
+    }
   } else {
     messages = renderMessages(blocks, meta)
+    layout = "plain (clustering off)"
   }
 
-  for (const message of messages) {
-    await telegram.sendMessage(chatId, message, {
-      parse_mode: "HTML",
-      link_preview_options: { is_disabled: true },
-    })
+  try {
+    for (const message of messages) {
+      await telegram.sendMessage(chatId, message, {
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      })
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    digestLog(`run FAILED -> chat ${chatId}: Telegram send error: ${msg}`)
+    throw error
   }
 
   // Mark delivered only after a successful send, so a failed push retries
@@ -369,5 +384,6 @@ export async function sendDigest(
   } else {
     logger.success(`digest: delivered ${total} headlines to ${chatId}`)
   }
+  digestLog(`run end -> chat ${chatId}: delivered ${total} headlines in ${messages.length} message(s), ${layout}${failed ? `, ${failed} source(s) failed` : ""}`)
   return total
 }
